@@ -225,6 +225,104 @@ class Scene3D:
         (x1, y1, z1), (x2, y2, z2) = u, v
         self.ax.plot([x1, x2], [y1, y2], [z1, z2], linewidth=lw)
 
+    def _axis_index(self, axis: str) -> int:
+        """Mapuje nazwę osi na indeks współrzędnej."""
+        a = (axis or "Z").upper()
+        if a == "X": return 0
+        if a == "Y": return 1
+        return 2  # Z domyślnie
+
+    def _unit_axis(self, axis: str):
+        """Jednostkowy wektor osi (X/Y/Z)."""
+        i = self._axis_index(axis)
+        return (1.0 if i == 0 else 0.0,
+                1.0 if i == 1 else 0.0,
+                1.0 if i == 2 else 0.0)
+
+    def draw_parallel_probe_points(self, u, v, *, axis="Z", offset=0.6, n=7,
+                                   size=22, mirror=False, level=0.0,
+                                   marker="o"):
+        """
+        Rysuje n punktów próbkowania na odcinku u→v, odsuniętych o 'offset'
+        wzdłuż osi 'axis' (poziom odniesienia). Opcjonalnie rysuje odbicie
+        względem płaszczyzny axis = level (mirror=True).
+
+        Parametry:
+          u, v     - końce krawędzi (trójki liczb)
+          axis     - 'X'|'Y'|'Z' (oś poziomu odniesienia)
+          offset   - skalarny dystans odsunięcia od krawędzi
+          n        - liczba próbek (≥2)
+          size     - rozmiar markerów
+          mirror   - czy rysować lustrzane punkty względem poziomu 'level'
+          level    - wartość poziomu (np. Z=0)
+          marker   - np. 'o', '^', 's'
+        """
+        if n < 2:
+            n = 2
+        # kierunek krawędzi względem osi: kolor 1 dla wzrostu, 0 dla spadku
+        idx = self._axis_index(axis)
+        dir_sign = 1.0 if (v[idx] - u[idx]) >= 0 else -1.0
+
+        # odsunięcie równoległe do osi poziomu
+        ax = self._unit_axis(axis)
+        off_vec = (offset * dir_sign * ax[0],
+                   offset * dir_sign * ax[1],
+                   offset * dir_sign * ax[2])
+
+        # parametryzacja odcinka u→v
+        ts = [i / (n - 1) for i in range(n)]
+        px, py, pz = [], [], []
+        mx, my, mz = [], [], []
+
+        for t in ts:
+            p = (u[0] * (1 - t) + v[0] * t,
+                 u[1] * (1 - t) + v[1] * t,
+                 u[2] * (1 - t) + v[2] * t)
+            q = (p[0] + off_vec[0],
+                 p[1] + off_vec[1],
+                 p[2] + off_vec[2])
+
+            px.append(q[0]);
+            py.append(q[1]);
+            pz.append(q[2])
+
+            if mirror:
+                # lustrzane odbicie względem płaszczyzny 'axis = level'
+                # odległość punktu od poziomu wzdłuż tej osi:
+                dist = q[idx] - level
+                # współrzędna lustrzana:
+                q_mirror = list(q)
+                q_mirror[idx] = q[idx] - 2.0 * dist
+                mx.append(q_mirror[0]);
+                my.append(q_mirror[1]);
+                mz.append(q_mirror[2])
+
+        # kolor: jasny dla dodatniego kierunku, ciemniejszy dla ujemnego
+        alpha_main = 0.95 if dir_sign > 0 else 0.85
+        alpha_mirr = 0.55
+
+        # rysuj punkty sondy równoległe do krawędzi
+        self.ax.scatter(px, py, pz, s=size, marker=marker, alpha=alpha_main)
+
+        # jeśli mirror=True — dorysuj odbicia
+        if mirror and mx:
+            self.ax.scatter(mx, my, mz, s=int(size * 0.85), marker=marker, alpha=alpha_mirr)
+
+    def draw_edge_with_probes(self, u, v, kind="S", *,
+                              axis="Z", offset=0.6, n=7,
+                              edge_lw=2.0, size=22, mirror=False, level=0.0,
+                              marker="o"):
+        """
+        Rysuje krawędź (S/H) oraz równoległe punkty sondy.
+        """
+        if kind == "S":
+            self.draw_edge_S(u, v, lw=edge_lw)
+        else:
+            self.draw_edge_H(u, v, lw=edge_lw)
+        self.draw_parallel_probe_points(u, v, axis=axis, offset=offset, n=n,
+                                        size=size, mirror=mirror, level=level,
+                                        marker=marker)
+
 
 # ============================================================
 # 4) WEJŚCIE: mapowanie strzałek na S/H
