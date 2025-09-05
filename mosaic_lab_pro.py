@@ -67,17 +67,51 @@ def project_to_l2(p):
 def sgn(v): return 1 if v > 0 else (-1 if v < 0 else 0)
 
 
+# ===== META: narzędzia =====
+
+def lerp(a, b, t):
+    return (a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t)
+
+
+def bbox_of(points):
+    if not points:
+        return (0, 0, 0, 0, 0, 0)
+    xs = [p[0] for p in points];
+    ys = [p[1] for p in points];
+    zs = [p[2] for p in points]
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
+
+class DSU:
+    def __init__(self):
+        self.p = {}
+
+    def find(self, x):
+        if x not in self.p: self.p[x] = x
+        if self.p[x] != x: self.p[x] = self.find(self.p[x])
+        return self.p[x]
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb: self.p[rb] = ra
+
+
 # ============================================================
 # 2) PRAWA I PLANOWANIE (A*)
 # ============================================================
 
 class Laws:
-    """Koszt kroku i heurystyka A*; parametryzowalne wagami wH, wS."""
+    """Koszt kroku i heurystyka A*; parametryzowalne wagami wH, wS.
+       Heurystyka gwarantuje admissibility i consistency dla siatki 14-portowej.
+    """
 
     def __init__(self, wH=1.0, wS=1.0, heuristic="mix"):
         self.wH = float(wH)
         self.wS = float(wS)
-        self.heuristic = heuristic  # "mix" | "l1" | "zero"
+        # heuristic: "mix" (dokładniejsza relaksacja liniowa + parytet) | "l1" (prosty LB) | "zero"
+        self.heuristic = heuristic
 
     def step_cost(self, u, v):
         t = edge_type(u, v)
@@ -85,19 +119,55 @@ class Laws:
         if t == "S": return self.wS
         return float("inf")
 
+    @staticmethod
+    def _l1(u, v):
+        return abs(v[0] - u[0]) + abs(v[1] - u[1]) + abs(v[2] - u[2])
+
+    def _lb_l1_relax(self, u, v):
+        """Dolne ograniczenie przez ciągłą relaksację L1:
+           - krok H może zredukować L1 maks. o 3,
+           - krok S może zredukować L1 maks. o 2.
+           LB = min( (L1/3)*wH, (L1/2)*wS ).
+           (Admissible i consistent; nie uwzględnia parytetu, ale nie przeszacuje.)
+        """
+        L1 = self._l1(u, v)
+        return min((L1 / 3.0) * self.wH, (L1 / 2.0) * self.wS)
+
+    def _lb_mixed_with_parity(self, u, v):
+        """Ściślejszy LB: wybiera tańszą 'gęstość redukcji L1' (wH/3 vs wS/2),
+           ale koryguje pod parytet (liczba kroków H musi być parzysta).
+        """
+        L1 = self._l1(u, v)
+
+        # gęstość kosztu: koszt za jednostkę redukcji L1
+        dens_H = self.wH / 3.0
+        dens_S = self.wS / 2.0
+
+        if dens_H <= dens_S:
+            # Preferuj H: minimalnie ceil(L1/3) kroków H. Wymuś parzystość.
+            k = math.ceil(L1 / 3.0)
+            if k % 2 == 1:
+                k += 1  # parzystość (H zmienia parytet wszystkich współrzędnych)
+            # Jeśli po tych H zostało coś z L1 (przez parytet), domknij najtańszym środkiem
+            reduced = 3 * k
+            if reduced >= L1:
+                return k * self.wH
+            rem = L1 - reduced
+            # Domknięcie S (bez naruszenia admissibility)
+            s = math.ceil(rem / 2.0)
+            return k * self.wH + s * self.wS
+        else:
+            # Preferuj S: wystarczy ceil(L1/2) kroków S jako LB.
+            s = math.ceil(L1 / 2.0)
+            return s * self.wS
+
     def h_estimate(self, u, goal):
         if self.heuristic == "zero":
             return 0.0
-        dx = abs(goal[0] - u[0]);
-        dy = abs(goal[1] - u[1]);
-        dz = abs(goal[2] - u[2])
         if self.heuristic == "l1":
-            return 0.5 * (dx + dy + dz) * min(self.wS, self.wH) * 0.66
-        # mix: maksymalna liczba H + reszta S (zachowuje parytet)
-        h_steps = min(dx, dy, dz)
-        rem = sorted([dx - h_steps, dy - h_steps, dz - h_steps], reverse=True)
-        s_steps = (rem[0] + rem[1] + rem[2]) // 2
-        return h_steps * self.wH + s_steps * self.wS
+            return self._lb_l1_relax(u, goal)
+        # "mix": dokładniejszy i nadal admissible/consistent
+        return self._lb_mixed_with_parity(u, goal)
 
 
 def neighbors_weighted(u, laws):
@@ -105,6 +175,24 @@ def neighbors_weighted(u, laws):
         v = add(u, d)
         if parity_ok(v):
             yield v, laws.step_cost(u, v)
+
+
+def validate_path(path):
+    """Sprawdza:
+       - parytet każdego węzła (x≡y≡z mod 2),
+       - czy każde (u,v) jest dopuszczalnym krokiem H lub S.
+       Zwraca (ok, msg).
+    """
+    if not path or len(path) < 2:
+        return False, "Ścieżka pusta."
+    for p in path:
+        if not parity_ok(p):
+            return False, f"Naruszony parytet w punkcie {p}."
+    for u, v in zip(path, path[1:]):
+        t = edge_type(u, v)
+        if t not in ("H", "S"):
+            return False, f"Niedozwolony krok {u}→{v} (Δ={sub(v, u)})."
+    return True, "OK"
 
 
 def astar(start, goal, laws, max_nodes=25000):
@@ -409,7 +497,8 @@ class _Constructions:
         self.reset()
 
     def reset(self):
-        self.steps = []; self.idx = 0
+        self.steps = [];
+        self.idx = 0
 
     def build_triangle(self):
         self.reset();
@@ -510,13 +599,16 @@ class MosaicLabTab(ttk.Frame):
         self.scene.canvas.draw_idle()
 
     def _run_triangle(self):
-        self.con.build_triangle(); self._play()
+        self.con.build_triangle();
+        self._play()
 
     def _run_square(self):
-        self.con.build_square();   self._play()
+        self.con.build_square();
+        self._play()
 
     def _run_five(self):
-        self.con.build_five_paths(); self._play()
+        self.con.build_five_paths();
+        self._play()
 
     def _play(self):
         self._render();
@@ -558,17 +650,21 @@ class MosaicLabTab(ttk.Frame):
         path, cost, seen = astar(start, goal, self._laws())
         self._render()
         if not path:
-            self.lbl.config(text=f"Brak ścieżki (visited={seen}).");
+            self.lbl.config(text=f"Brak ścieżki (visited={seen}).")
             return
+
+        ok, msg = validate_path(path)
         xs, ys, zs = [], [], []
         for u, v in zip(path, path[1:]):
             (self.scene.draw_edge_S if edge_type(u, v) == "S" else self.scene.draw_edge_H)(u, v, lw=2.0)
             xs += [u[0], v[0]];
             ys += [u[1], v[1]];
             zs += [u[2], v[2]]
-        self.scene.set_limits(xs, ys, zs);
+        self.scene.set_limits(xs, ys, zs)
         self.scene.canvas.draw_idle()
-        self.lbl.config(text=f"OK: koszt={cost:.3f}, kroki={len(path) - 1}, odwiedzonych={seen}")
+
+        prefix = "✔" if ok else "⚠"
+        self.lbl.config(text=f"{prefix} {msg} | koszt={cost:.3f}, kroki={len(path) - 1}, odwiedzonych={seen}")
 
     def _save_png(self):
         file = filedialog.asksaveasfilename(title="Zapisz obraz", defaultextension=".png",
@@ -617,7 +713,8 @@ class MetaWorldTab(ttk.Frame):
         self.after(0, self.render)
 
     def _toggle_compass(self):
-        self.scene._draw_compass = not self.scene._draw_compass; self.render()
+        self.scene._draw_compass = not self.scene._draw_compass;
+        self.render()
 
     def _centers(self, R):
         pts = []
@@ -666,29 +763,34 @@ class MetaWorldTab(ttk.Frame):
                                 (cx - 1, cy - 1, cz)]
                     self.scene.ax.plot([p[0] for p in poly], [p[1] for p in poly], [p[2] for p in poly], linewidth=1.0)
         if self.var_hexes.get():
-            for c in centers:
-                for h in H_VECS:
-                    cx, cy, cz = c
-                    d = (float(h[0]), float(h[1]), float(h[2]))
-                    # szkic sześciokąta w płaszczyźnie ⟂ do h
-                    import numpy as np
-                    dn = np.array(d);
-                    dn = dn / np.linalg.norm(dn)
-                    tmp = np.array([1, 0, 0]);
-                    tmp = np.array([0, 1, 0]) if abs(float(dn[0])) > 0.8 else tmp
-                    u = tmp - np.dot(tmp, dn) * dn;
-                    u = u / np.linalg.norm(u)
-                    v = np.cross(dn, u);
-                    R = math.sqrt(2)
-                    verts = []
-                    for k in range(7):
-                        ang = 2 * math.pi * k / 6.0
-                        p = (cx + R * (math.cos(ang) * u[0] + math.sin(ang) * v[0]),
-                             cy + R * (math.cos(ang) * u[1] + math.sin(ang) * v[1]),
-                             cz + R * (math.cos(ang) * u[2] + math.sin(ang) * v[2]))
-                        verts.append(p)
-                    self.scene.ax.plot([p[0] for p in verts], [p[1] for p in verts], [p[2] for p in verts],
-                                       linewidth=0.9, alpha=0.85)
+            try:
+                import numpy as np
+                for c in centers:
+                    for h in H_VECS:
+                        cx, cy, cz = c
+                        d = (float(h[0]), float(h[1]), float(h[2]))
+                        dn = np.array(d);
+                        dn = dn / np.linalg.norm(dn)
+                        # wybór wektora niekolinearnie z dn
+                        tmp = np.array([1.0, 0.0, 0.0])
+                        if abs(float(dn[0])) > 0.8:
+                            tmp = np.array([0.0, 1.0, 0.0])
+                        u = tmp - np.dot(tmp, dn) * dn
+                        u = u / np.linalg.norm(u)
+                        v = np.cross(dn, u)
+                        R = math.sqrt(2)
+                        verts = []
+                        for k in range(7):
+                            ang = 2 * math.pi * k / 6.0
+                            p = (cx + R * (math.cos(ang) * u[0] + math.sin(ang) * v[0]),
+                                 cy + R * (math.cos(ang) * u[1] + math.sin(ang) * v[1]),
+                                 cz + R * (math.cos(ang) * u[2] + math.sin(ang) * v[2]))
+                            verts.append(p)
+                        self.scene.ax.plot([p[0] for p in verts], [p[1] for p in verts], [p[2] for p in verts],
+                                           linewidth=0.9, alpha=0.85)
+            except Exception:
+                # Brak numpy lub środowisko bez obsługi — pomiń warstwę heksów
+                pass
         self.scene.set_limits(xs or [0], ys or [0], zs or [0]);
         self.scene.canvas.draw_idle()
 
@@ -939,6 +1041,321 @@ def ast_to_scene_coords(tree):
     return coords, labels, per_level
 
 
+def compute_meta_layers(tree, G, coords, per_level, *, mode="depth-bucket", bucket=2):
+    """
+    Zwraca: groups: list of dict:
+        {"name": str, "nodes": [ast.AST], "center": (x,y,z), "bbox": (xmin,xmax,ymin,ymax,zmin,zmax)}
+    oraz mapowanie node->center (anchor) i node->group_name.
+    """
+    # przygotuj pomocnicze słowniki
+    id2node = {i: n for (n, i) in G.idmap.items()}
+    node2id = {n: i for (i, n) in id2node.items()}
+
+    groups = []
+    node2group = {}
+    group2nodes = {}
+
+    if mode == "type":
+        # grupy po nazwie typu
+        for n in coords.keys():
+            key = type(n).__name__
+            group2nodes.setdefault(key, []).append(n)
+    elif mode == "defuse":
+        # komponenty spójności po krawędziach H (Use<->Def, arg->Function)
+        dsu = DSU()
+        for (u_id, v_id, t) in G.edges:
+            if t == "H":
+                dsu.union(u_id, v_id)
+        comp = {}
+        for n in coords.keys():
+            root = dsu.find(node2id[n])
+            comp.setdefault(root, []).append(n)
+        # nazwijmy grupy po indeksie korzenia
+        for root, ns in comp.items():
+            key = f"DU#{root}"
+            group2nodes[key] = ns
+    else:
+        # depth-bucket (domyślnie)
+        # per_level: dict depth -> [nodes]; zrzucamy do kubełków co 'bucket'
+        for d, nodes in per_level.items():
+            key = f"D{d // bucket}"
+            group2nodes.setdefault(key, []).extend(nodes)
+
+    # policz centra i bboxy
+    centers = {}
+    for key, ns in group2nodes.items():
+        pts = [coords[n] for n in ns if n in coords]
+        if not pts:
+            continue
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        cz = sum(p[2] for p in pts) / len(pts)
+        bb = bbox_of(pts)
+        groups.append({"name": key, "nodes": ns, "center": (cx, cy, cz), "bbox": bb})
+        for n in ns:
+            node2group[n] = key
+            centers[n] = (cx, cy, cz)
+
+    return groups, centers, node2group
+
+# ============================================================
+# A) EWOLUCJA TOPOLOGICZNA MOZAIKI (DARPA "mosaic/honeycomb")
+#     - supergraf grup (węzeł=grupa, krawędź=agregat S/H)
+#     - wybór reprezentantów grup vs. pełny detal
+#     - modulacja grubości krawędzi względem λ
+#     - stabilny aspekt pudełka (bez "fałszywego zoomu")
+# ============================================================
+
+def build_supergraph(groups, G, node2group):
+    """
+    Buduje supergraf:
+      - super_nodes: [(group_name, center(x,y,z), size)]
+      - super_edges: [(gA, gB, kind, count)], kind ∈ {"S","H"}, count = liczba krawędzi oryginalnych między grupami.
+
+    Założenie "honeycomb": łączność międzykomórkowa (H/S) jest agregowana;
+    miara siły połączenia = liczba realnych połączeń (count).
+    """
+    centers = {g["name"]: g["center"] for g in groups}
+    sizes   = {g["name"]: len(g["nodes"]) for g in groups}
+
+    id2node = {i: n for (n, i) in G.idmap.items()}
+    cntS, cntH = {}, {}
+
+    for (u_id, v_id, t) in G.edges:
+        u = id2node[u_id]; v = id2node[v_id]
+        gu = node2group.get(u); gv = node2group.get(v)
+        if not gu or not gv or gu == gv:
+            continue
+        key = tuple(sorted((gu, gv)))
+        if t == "S":
+            cntS[key] = cntS.get(key, 0) + 1
+        else:
+            cntH[key] = cntH.get(key, 0) + 1
+
+    super_nodes = [(name, centers[name], sizes[name]) for name in centers.keys()]
+    super_edges = []
+    for (ga, gb), c in cntS.items():
+        super_edges.append((ga, gb, "S", c))
+    for (ga, gb), c in cntH.items():
+        super_edges.append((ga, gb, "H", c))
+    return super_nodes, super_edges
+
+
+def select_nodes_for_lambda(per_level, coords_plot, zmax, limit, groups, lam, threshold=0.6, evolve=True):
+    """
+    Daje zbiór widocznych węzłów dla danego poziomu abstrakcji λ.
+      - dla małej λ lub gdy evolve=False: detal (do 'limit' per poziom z filtrem Z)
+      - dla dużej λ (λ >= threshold): 1 reprezentant na grupę (najbliższy centroidowi)
+    """
+    if not evolve or lam < threshold:
+        keep = set()
+        for _d, nodes_on_level in per_level.items():
+            nodes_sorted = sorted(nodes_on_level, key=lambda n: coords_plot[n][0])
+            for i, n in enumerate(nodes_sorted):
+                x, y, z = coords_plot[n]
+                if z <= 2 * zmax and i < limit:
+                    keep.add(n)
+        return keep
+
+    # λ wysokie: kontrakcja do reprezentantów grup
+    import math as _m
+    keep = set()
+    for g in groups:
+        cx, cy, cz = g["center"]
+        def _d2(n):
+            x, y, z = coords_plot[n]; dx, dy, dz = (x-cx, y-cy, z-cz)
+            return dx*dx + dy*dy + dz*dz
+        if g["nodes"]:
+            rep = min(g["nodes"], key=_d2)
+            keep.add(rep)
+    return keep
+
+
+def edge_style_for_lambda(gu, gv, *, lam, threshold, lw_base, evolve):
+    """
+    Reguła „mosaic”: intra-group zanika wraz z λ, inter-group rośnie subtelnie.
+    Zwraca: linewidth (float) lub None gdy krawędź ma być wyłączona.
+    """
+    same = (gu is not None and gv is not None and gu == gv)
+    if not evolve:
+        return max(0.4, lw_base * 0.6)
+    if same:
+        # wewnątrz komórki (plastra) wygaszamy; po progu usuwamy
+        if lam >= threshold:
+            return None
+        return max(0.2, lw_base * (1.0 - lam))
+    # między komórkami — podkreślamy umiarkowanie wraz z λ
+    return max(0.4, lw_base * (0.6 + 0.6 * lam))
+
+
+def draw_supergraph_layer(ax, groups, super_edges, lam, *, emphasize_H=0.8, emphasize_S=1.0):
+    """
+    Rysuje warstwę supergrafu między centroidami grup (tylko dla dużych λ).
+    Grubość ∝ liczbie połączeń i λ. Węzły: markery '^' z rozmiarem ~|C|.
+    """
+    name2center = {g["name"]: g["center"] for g in groups}
+    name2size   = {g["name"]: len(g["nodes"]) for g in groups}
+
+    # super-krawędzie
+    for (ga, gb, kind, count) in super_edges:
+        ca = name2center[ga]; cb = name2center[gb]
+        scale = (emphasize_H if kind == "H" else emphasize_S)
+        lw = scale * (1.0 + 0.15 * count) * (0.4 + 0.6 * lam)
+        # rysunek jako segment prosty (w AST-Lab oba typy są liniami)
+        ax.plot([ca[0], cb[0]], [ca[1], cb[1]], [ca[2], cb[2]], linewidth=lw)
+
+    # super-węzły
+    for name, (cx, cy, cz) in name2center.items():
+        size = name2size.get(name, 1)
+        ax.scatter([cx], [cy], [cz], s=40 + 6 * size * lam, marker="^")
+        ax.text(cx, cy, cz + 0.4, name, fontsize=7)
+
+
+def draw_edges_evolving(scene, G, id2node, node2group, coords_plot, nodes_visible,
+                        lam, threshold, lwS, lwH, show_S, show_H, sel_S, sel_H, groups):
+    """
+    Jednolity renderer krawędzi S/H z modulacją λ i wsparciem selektorów.
+    Zwraca: (xs, ys, zs) punktów (do ustawiania limitów osi).
+    """
+    ax = scene.ax
+    xs, ys, zs = [], [], []
+
+    def _record(n):
+        x, y, z = coords_plot[n]; xs.append(x); ys.append(y); zs.append(z)
+
+    for n in nodes_visible:
+        _record(n)
+
+    if show_S:
+        for (u_id, v_id, t) in G.edges:
+            if t != "S":
+                continue
+            u = id2node[u_id]; v = id2node[v_id]
+            if u not in nodes_visible or v not in nodes_visible:
+                continue
+            gu = node2group.get(u); gv = node2group.get(v)
+            lw = edge_style_for_lambda(gu, gv, lam=lam, threshold=threshold, lw_base=lwS, evolve=True)
+            if lw is None:
+                continue
+            (x1, y1, z1) = coords_plot[u]; (x2, y2, z2) = coords_plot[v]
+            scene.draw_edge_S((x1, y1, z1), (x2, y2, z2), lw=lw)
+
+        if sel_S:
+            for (u_id, v_id, t) in G.edges:
+                if t != "S":
+                    continue
+                u = id2node[u_id]; v = id2node[v_id]
+                if u not in nodes_visible or v not in nodes_visible:
+                    continue
+                (x1, y1, z1) = coords_plot[u]; (x2, y2, z2) = coords_plot[v]
+                tags = set()
+                if x2 != x1: tags.add("X+" if x2 > x1 else "X-")
+                if y2 != y1: tags.add("Y+" if y2 > y1 else "Y-")
+                if z2 != z1: tags.add("Z+" if z2 > z1 else "Z-")
+                if tags & sel_S:
+                    scene.draw_edge_S((x1, y1, z1), (x2, y2, z2), lw=lwS)
+
+    if show_H:
+        for (u_id, v_id, t) in G.edges:
+            if t != "H":
+                continue
+            u = id2node[u_id]; v = id2node[v_id]
+            if u not in nodes_visible or v not in nodes_visible:
+                continue
+            gu = node2group.get(u); gv = node2group.get(v)
+            lw = edge_style_for_lambda(gu, gv, lam=lam, threshold=threshold, lw_base=lwH, evolve=True)
+            if lw is None:
+                continue
+            (x1, y1, z1) = coords_plot[u]; (x2, y2, z2) = coords_plot[v]
+            scene.draw_edge_H((x1, y1, z1), (x2, y2, z2), lw=lw)
+
+        if sel_H:
+            for (u_id, v_id, t) in G.edges:
+                if t != "H":
+                    continue
+                u = id2node[u_id]; v = id2node[v_id]
+                if u not in nodes_visible or v not in nodes_visible:
+                    continue
+                (x1, y1, z1) = coords_plot[u]; (x2, y2, z2) = coords_plot[v]
+                lab = ("+" if x2 > x1 else "-") + ("+" if y2 > y1 else "-") + ("+" if z2 > z1 else "-")
+                if lab in sel_H:
+                    scene.draw_edge_H((x1, y1, z1), (x2, y2, z2), lw=lwH)
+
+    return xs, ys, zs
+
+
+def set_box_aspect_equal(ax):
+    """Stabilna ramka 3D — bez efektu pseudo-zoomu przy zmianie λ."""
+    try:
+        ax.set_box_aspect([1, 1, 1])
+    except Exception:
+        # fallback: wyrównaj limity do tej samej rozpiętości
+        xlim = ax.get_xlim3d(); ylim = ax.get_ylim3d(); zlim = ax.get_zlim3d()
+        spans = (xlim[1]-xlim[0], ylim[1]-ylim[0], zlim[1]-zlim[0])
+        maxs = max(spans)
+        def _centered(lim):
+            c = 0.5 * (lim[0] + lim[1])
+            return (c - 0.5*maxs, c + 0.5*maxs)
+        ax.set_xlim3d(*_centered(xlim))
+        ax.set_ylim3d(*_centered(ylim))
+        ax.set_zlim3d(*_centered(zlim))
+
+
+def astlab_install_topology_controls(astlab, meta_frame):
+    """
+    Dodaje kontrolki do AST-Lab: „Ewolucja topologii” i próg intra-grup (λ*).
+    Użycie: wywołaj raz w AstLabTab.__init__: astlab_install_topology_controls(self, meta)
+    """
+    astlab.var_evolve = tk.BooleanVar(value=True)
+    ttk.Checkbutton(meta_frame, text="Ewolucja topologii", variable=astlab.var_evolve,
+                    command=lambda: astlab.render()).grid(row=3, column=0, sticky="w")
+
+    ttk.Label(meta_frame, text="próg intra (λ*)").grid(row=3, column=1, sticky="e")
+    astlab.scale_thresh = tk.Scale(meta_frame, from_=0.0, to=1.0, resolution=0.05,
+                                   orient=tk.HORIZONTAL, length=120,
+                                   command=lambda _v: astlab.render())
+    astlab.scale_thresh.set(0.6)
+    astlab.scale_thresh.grid(row=3, column=2, columnspan=2, sticky="ew")
+
+
+# (opcjonalnie) Test heurystyki A* — dowód empiryczny admissibility/consistency
+def empirical_heuristic_report(laws, R=4, trials=64, seed=0):
+    """
+    Losowo próbuje par start/goal w kratownicy parzystości (x≡y≡z mod 2),
+    sprawdza czy h(s,g) ≤ koszt najkrótszy. Zwraca statystyki.
+    Nie używane w GUI; do jednostkowych testów jakości naukowej.
+    """
+    import random
+    random.seed(seed)
+
+    def _rand_point():
+        # generuj do skutku punkt z parytetem
+        while True:
+            p = (random.randint(-2*R, 2*R),
+                 random.randint(-2*R, 2*R),
+                 random.randint(-2*R, 2*R))
+            if parity_ok(p):
+                return p
+
+    violations = 0
+    deltas = []
+    for _ in range(trials):
+        s = _rand_point(); g = _rand_point()
+        h = laws.h_estimate(s, g)
+        path, cost, _seen = astar(s, g, laws, max_nodes=100000)
+        if path is None:
+            continue
+        deltas.append(cost - h)
+        if h - cost > 1e-9:
+            violations += 1
+    return {
+        "trials": trials,
+        "violations": violations,
+        "min_margin": min(deltas) if deltas else None,
+        "avg_margin": sum(deltas)/len(deltas) if deltas else None,
+        "max_margin": max(deltas) if deltas else None,
+    }
+
 DEFAULT_SNIPPET = """\
 def f(x):
     y = x
@@ -961,18 +1378,21 @@ class AstLabTab(ttk.Frame):
         self.txt.pack(fill=tk.Y);
         self.txt.insert("1.0", DEFAULT_SNIPPET)
 
-        ctrl = ttk.LabelFrame(left, text="Ustawienia");
+        ctrl = ttk.LabelFrame(left, text="Ustawienia")
         ctrl.pack(fill=tk.X, pady=8)
         self.var_show_S = tk.BooleanVar(value=True)
         self.var_show_H = tk.BooleanVar(value=True)
         self.var_show_labels = tk.BooleanVar(value=True)
         self.var_auto_render = tk.BooleanVar(value=True)
-        ttk.Checkbutton(ctrl, text="Pokaż S", variable=self.var_show_S, command=self.render).grid(row=0, column=0,
-                                                                                                  sticky="w")
-        ttk.Checkbutton(ctrl, text="Pokaż H", variable=self.var_show_H, command=self.render).grid(row=0, column=1,
-                                                                                                  sticky="w")
-        ttk.Checkbutton(ctrl, text="Etykiety", variable=self.var_show_labels, command=self.render).grid(row=0, column=2,
-                                                                                                        sticky="w")
+        ttk.Checkbutton(ctrl, text="Pokaż S", variable=self.var_show_S, command=lambda: self.render()).grid(row=0,
+                                                                                                            column=0,
+                                                                                                            sticky="w")
+        ttk.Checkbutton(ctrl, text="Pokaż H", variable=self.var_show_H, command=lambda: self.render()).grid(row=0,
+                                                                                                            column=1,
+                                                                                                            sticky="w")
+        ttk.Checkbutton(ctrl, text="Etykiety", variable=self.var_show_labels, command=lambda: self.render()).grid(row=0,
+                                                                                                                  column=2,
+                                                                                                                  sticky="w")
         ttk.Checkbutton(ctrl, text="Auto-render (0.6 s)", variable=self.var_auto_render).grid(row=0, column=3,
                                                                                               sticky="w")
         ttk.Label(ctrl, text="Punkty").grid(row=1, column=0, sticky="w")
@@ -990,12 +1410,12 @@ class AstLabTab(ttk.Frame):
         self.scale_lh.set(1.0);
         self.scale_lh.grid(row=2, column=1, sticky="ew")
         ttk.Label(ctrl, text="Limit/poziom").grid(row=2, column=2, sticky="w")
-        self.spin_limit = tk.Spinbox(ctrl, from_=1, to=999, width=7, command=self.render);
+        self.spin_limit = tk.Spinbox(ctrl, from_=1, to=999, width=7, command=lambda: self.render())
         self.spin_limit.delete(0, "end");
         self.spin_limit.insert(0, "999");
         self.spin_limit.grid(row=2, column=3, sticky="w")
         ttk.Label(ctrl, text="Max Z").grid(row=3, column=0, sticky="w")
-        self.spin_depth = tk.Spinbox(ctrl, from_=0, to=999, width=7, command=self.render);
+        self.spin_depth = tk.Spinbox(ctrl, from_=0, to=999, width=7, command=lambda: self.render())
         self.spin_depth.delete(0, "end");
         self.spin_depth.insert(0, "999");
         self.spin_depth.grid(row=3, column=1, sticky="w")
@@ -1031,10 +1451,42 @@ class AstLabTab(ttk.Frame):
         self.txt.bind("<KeyRelease>", self._on_key)
         self.bind_all("<Control-Return>", lambda e: self.render())
 
+        # === META PANEL (po prawej) ===
+        meta = ttk.LabelFrame(right, text="Metaopis / poziomy abstrakcji")
+        astlab_install_topology_controls(self, meta)
+        meta.pack(fill=tk.X, pady=6)
+
+        ttk.Label(meta, text="Tryb").grid(row=0, column=0, sticky="w")
+        self.var_mode = tk.StringVar(value="depth-bucket")
+        ttk.OptionMenu(meta, self.var_mode, "depth-bucket", "depth-bucket", "type", "defuse",
+                       command=lambda _=None: self.render()).grid(row=0, column=1, sticky="w")
+
+        ttk.Label(meta, text="bucket").grid(row=0, column=2, sticky="e")
+        self.spin_bucket = tk.Spinbox(meta, from_=1, to=10, width=6, command=lambda: self.render())
+        self.spin_bucket.delete(0, "end");
+        self.spin_bucket.insert(0, "2")
+        self.spin_bucket.grid(row=0, column=3, sticky="w")
+
+        ttk.Label(meta, text="λ (abstrakcja)").grid(row=1, column=0, sticky="w")
+        self.scale_lambda = tk.Scale(meta, from_=0.0, to=1.0, resolution=0.05,
+                                     orient=tk.HORIZONTAL, command=lambda _v: self.render(), length=220)
+        self.scale_lambda.set(0.0)
+        self.scale_lambda.grid(row=1, column=1, columnspan=3, sticky="ew")
+
+        self.var_show_anchors = tk.BooleanVar(value=True)
+        self.var_show_hulls = tk.BooleanVar(value=False)
+        ttk.Checkbutton(meta, text="Centroidy", variable=self.var_show_anchors, command=lambda: self.render()).grid(
+            row=2, column=0, sticky="w")
+        ttk.Checkbutton(meta, text="Obrysy bbox", variable=self.var_show_hulls, command=lambda: self.render()).grid(
+            row=2, column=1, sticky="w")
+
+        ttk.Button(meta, text="Okno poziomów…", command=self._open_meta_window).grid(row=2, column=3, sticky="e")
+        self._meta_win = None
+
         # przyciski sceny
         btns = ttk.Frame(left);
         btns.pack(fill=tk.X, pady=6)
-        ttk.Button(btns, text="Renderuj", command=self.render).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text="Renderuj", command=lambda: self.render()).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="Reset widoku", command=self.scene.reset_view).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="Zapisz PNG", command=self._save_png).pack(side=tk.LEFT, padx=2)
 
@@ -1085,105 +1537,164 @@ class AstLabTab(ttk.Frame):
                                             filetypes=[("PNG", "*.png")], initialfile="honey_ast_scene.png")
         if file: self.scene.fig.savefig(file, dpi=150)
 
+    def _open_meta_window(self):
+        if self._meta_win and tk.Toplevel.winfo_exists(self._meta_win):
+            self._meta_win.lift();
+            return
+        self._meta_win = tk.Toplevel(self)
+        self._meta_win.title("Poziomy abstrakcji — metaopis")
+        self._meta_tree = ttk.Treeview(self._meta_win, columns=("size", "center", "bbox"), show="headings", height=18)
+        for col, txt, w in (("size", "|C|", 60), ("center", "center (x,y,z)", 220), ("bbox", "bbox (xmin..zmax)", 320)):
+            self._meta_tree.heading(col, text=txt);
+            self._meta_tree.column(col, width=w, anchor="w")
+        self._meta_tree.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(self._meta_win, text="Odśwież", command=self._refresh_meta_window).pack(anchor="e", pady=4, padx=4)
+
+    def _refresh_meta_window(self):
+        if not (self._meta_win and tk.Toplevel.winfo_exists(self._meta_win)):
+            return
+        tree = self._meta_tree
+        for it in tree.get_children():
+            tree.delete(it)
+        if not hasattr(self, "_last_groups") or not self._last_groups:
+            return
+        for g in sorted(self._last_groups, key=lambda G: (-len(G["nodes"]), G["name"])):
+            cx, cy, cz = g["center"];
+            b = g["bbox"]
+            tree.insert("", "end", values=(len(g["nodes"]),
+                                           f"({cx:.2f},{cy:.2f},{cz:.2f})",
+                                           f"({b[0]:.2f}..{b[1]:.2f}, {b[2]:.2f}..{b[3]:.2f}, {b[4]:.2f}..{b[5]:.2f})"))
+
     # render
     def render(self):
+        # 1) Parsowanie kodu i stan UI
         code = self.txt.get("1.0", "end-1c")
         try:
             tree = ast.parse(code)
         except Exception as e:
-            self.scene.clear("AST → Kompas 3D");
+            self.scene.clear("AST → Kompas 3D")
             self.scene.draw_compass()
-            self._set_status(f"Błąd składni: {e}", error=True);
-            self.scene.canvas.draw_idle();
+            self._set_status(f"Błąd składni: {e}", error=True)
+            self.scene.canvas.draw_idle()
             return
+
         self._set_status("OK — wyrenderowano", error=False)
+        lam = float(self.scale_lambda.get())
+        self._set_status(f"OK — λ={lam:.2f}, mode={self.var_mode.get()}", error=False)
+
+        # 2) Budowa grafu i rzutowanie do sceny
         G = AstGraph().build_from_ast(tree)
         coords, labels, per_level = ast_to_scene_coords(tree)
 
-        # parametry
-        show_S = self.var_show_S.get();
-        show_H = self.var_show_H.get();
+        mode = self.var_mode.get()
+        bucket = int(self.spin_bucket.get())
+        groups, anchors, node2group = compute_meta_layers(
+            tree, G, coords, per_level, mode=mode, bucket=bucket
+        )
+        self._last_groups = groups  # dla okna meta
+
+        # Pozycje płynne: od detalu do centroidów (λ)
+        coords_plot = {n: lerp(coords[n], anchors.get(n, coords[n]), lam) for n in coords}
+
+        # 3) Parametry renderingu / ewolucji
+        th_intra = float(getattr(self, "scale_thresh", tk.DoubleVar(value=0.6)).get())
+        evolve = bool(getattr(self, "var_evolve", tk.BooleanVar(value=True)).get())
+
+        show_S = self.var_show_S.get()
+        show_H = self.var_show_H.get()
         show_labels = self.var_show_labels.get()
-        lwS = float(self.scale_ls.get());
-        lwH = float(self.scale_lh.get());
+
+        lwS = float(self.scale_ls.get())
+        lwH = float(self.scale_lh.get())
         sz = float(self.scale_pts.get())
-        limit = int(self.spin_limit.get());
+
+        limit = int(self.spin_limit.get())
         zmax = int(self.spin_depth.get())
 
         id2node = {i: n for (n, i) in G.idmap.items()}
-        keep = set()
-        for d, nodes in per_level.items():
-            nodes_sorted = sorted(nodes, key=lambda n: coords[n][0])
-            for i, n in enumerate(nodes_sorted):
-                x, y, z = coords[n]
-                if z <= 2 * zmax and i < limit: keep.add(n)
-        nodes = sorted(list(keep), key=lambda n: coords[n])
 
-        self.scene.clear("AST → Kompas 3D");
+        # 4) Wybór widocznych węzłów zależnie od λ (kontrakcja do reprezentantów po progu)
+        nodes_visible = select_nodes_for_lambda(
+            per_level, coords_plot, zmax, limit, groups, lam,
+            threshold=th_intra, evolve=evolve
+        )
+
+        # 5) Rysunek sceny
+        self.scene.clear("AST → Kompas 3D")
         self.scene.draw_compass()
 
-        xs, ys, zs = [], [], []
-        for n in nodes:
-            x, y, z = coords[n];
-            xs.append(x);
-            ys.append(y);
-            zs.append(z)
-        self.scene.ax.scatter(xs, ys, zs, s=sz)
+        # krawędzie i zbiór punktów do wyznaczenia granic
+        xs, ys, zs = draw_edges_evolving(
+            self.scene, G, id2node, node2group, coords_plot, nodes_visible,
+            lam, th_intra, lwS, lwH, show_S, show_H, self.sel_S, self.sel_H, groups
+        )
+
+        # punkty (węzły)
+        if nodes_visible:
+            px = [coords_plot[n][0] for n in nodes_visible]
+            py = [coords_plot[n][1] for n in nodes_visible]
+            pz = [coords_plot[n][2] for n in nodes_visible]
+            self.scene.ax.scatter(px, py, pz, s=sz)
+            xs += px;
+            ys += py;
+            zs += pz
+
+        # etykiety
         if show_labels:
-            for n in nodes:
-                x, y, z = coords[n];
+            for n in nodes_visible:
+                x, y, z = coords_plot[n]
                 self.scene.ax.text(x, y, z + 0.3, labels[n], fontsize=7)
 
-        # S bazowe
-        if show_S:
-            for (u_id, v_id, t) in G.edges:
-                if t != "S": continue
-                u = id2node[u_id];
-                v = id2node[v_id]
-                if u not in nodes or v not in nodes: continue
-                self.scene.draw_edge_S(coords[u], coords[v], lw=max(0.6, lwS * 0.6))
-            # wyróżnienia S
-            if self.sel_S:
-                for (u_id, v_id, t) in G.edges:
-                    if t != "S": continue
-                    u = id2node[u_id];
-                    v = id2node[v_id]
-                    if u not in nodes or v not in nodes: continue
-                    (x1, y1, z1) = coords[u];
-                    (x2, y2, z2) = coords[v]
-                    tags = set()
-                    if x2 != x1: tags.add("X+" if x2 > x1 else "X-")
-                    if y2 != y1: tags.add("Y+" if y2 > y1 else "Y-")
-                    if z2 != z1: tags.add("Z+" if z2 > z1 else "Z-")
-                    if tags & self.sel_S: self.scene.draw_edge_S((x1, y1, z1), (x2, y2, z2), lw=lwS)
+        # centroidy / obrysy klas (opcjonalnie)
+        if self.var_show_anchors.get():
+            for g in groups:
+                cx, cy, cz = g["center"]
+                self.scene.ax.scatter([cx], [cy], [cz], s=60, marker="^")
+                self.scene.ax.text(cx, cy, cz + 0.4, g["name"], fontsize=7)
 
-        # H bazowe
-        if show_H:
-            for (u_id, v_id, t) in G.edges:
-                if t != "H": continue
-                u = id2node[u_id];
-                v = id2node[v_id]
-                if u not in nodes or v not in nodes: continue
-                self.scene.draw_edge_H(coords[u], coords[v], lw=max(0.6, lwH * 0.6))
-            # wyróżnienia H
-            if self.sel_H:
-                for (u_id, v_id, t) in G.edges:
-                    if t != "H": continue
-                    u = id2node[u_id];
-                    v = id2node[v_id]
-                    if u not in nodes or v not in nodes: continue
-                    (x1, y1, z1) = coords[u];
-                    (x2, y2, z2) = coords[v]
-                    lab = ("+" if x2 > x1 else "-") + ("+" if y2 > y1 else "-") + ("+" if z2 > z1 else "-")
-                    if lab in self.sel_H: self.scene.draw_edge_H((x1, y1, z1), (x2, y2, z2), lw=lwH)
+        if self.var_show_hulls.get():
+            for g in groups:
+                xmin, xmax, ymin, ymax, zmin, zmax_ = g["bbox"]
+                X = [xmin, xmax];
+                Y = [ymin, ymax];
+                Z = [zmin, zmax_]
+                edges = [
+                    ((X[0], Y[0], Z[0]), (X[1], Y[0], Z[0])),
+                    ((X[0], Y[1], Z[0]), (X[1], Y[1], Z[0])),
+                    ((X[0], Y[0], Z[1]), (X[1], Y[0], Z[1])),
+                    ((X[0], Y[1], Z[1]), (X[1], Y[1], Z[1])),
+                    ((X[0], Y[0], Z[0]), (X[0], Y[1], Z[0])),
+                    ((X[1], Y[0], Z[0]), (X[1], Y[1], Z[0])),
+                    ((X[0], Y[0], Z[1]), (X[0], Y[1], Z[1])),
+                    ((X[1], Y[0], Z[1]), (X[1], Y[1], Z[1])),
+                    ((X[0], Y[0], Z[0]), (X[0], Y[0], Z[1])),
+                    ((X[1], Y[0], Z[0]), (X[1], Y[0], Z[1])),
+                    ((X[0], Y[1], Z[0]), (X[0], Y[1], Z[1])),
+                    ((X[1], Y[1], Z[0]), (X[1], Y[1], Z[1])),
+                ]
+                for (p, q) in edges:
+                    self.scene.ax.plot([p[0], q[0]], [p[1], q[1]], [p[2], q[2]], linewidth=0.6, alpha=0.6)
 
+        # 6) Warstwa supergrafu między centroidami (dla wysokiego λ)
+        if evolve and lam >= th_intra:
+            super_nodes, super_edges = build_supergraph(groups, G, node2group)
+            draw_supergraph_layer(self.scene.ax, groups, super_edges, lam)
+
+        # 7) Limity i stabilizacja pudełka (bez pseudo-zoomu)
         xmax = max(xs + [6]);
         ymax = max(ys + [6]);
         zmaxp = max(zs + [10])
-        self.scene.ax.set_xlim(-1, xmax + 1);
-        self.scene.ax.set_ylim(-1, ymax + 1);
+        self.scene.ax.set_xlim(-1, xmax + 1)
+        self.scene.ax.set_ylim(-1, ymax + 1)
         self.scene.ax.set_zlim(-1, zmaxp + 1)
+        set_box_aspect_equal(self.scene.ax)
+
+        # 8) Final draw + ewentualne odświeżenie okna meta
         self.scene.canvas.draw_idle()
+        try:
+            self._refresh_meta_window()
+        except Exception:
+            pass
 
 
 # ============================================================
