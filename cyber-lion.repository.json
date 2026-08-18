@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0.0",
+  "repository": {
+    "id": "DonkeyJJLove/mosaic_lab_pro.py",
+    "url": "https://github.com/DonkeyJJLove/mosaic_lab_pro.py",
+    "owner": "DonkeyJJLove",
+    "default_branch": "main",
+    "vcs_ref": null
+  },
+  "cyber_lion": {
+    "tile_id": "structural-intelligence.mosaic",
+    "roles": ["StructuralIntelligenceEngine", "GraphProjectionProvider", "TopologyRiskAnalyzer"],
+    "layers": ["INF", "SEM"],
+    "disposition": ["KEEP", "REFINE", "GENERALIZE", "INTEGRATE"]
+  },
+  "capabilities": [
+    "graph.project",
+    "graph.abstract",
+    "topology.analyze",
+    "authority.graph",
+    "provenance.graph",
+    "structure.anomaly"
+  ],
+  "authority": {
+    "maximum_level": "read",
+    "required_gates": ["cyber-lion.mand"]
+  },
+  "observability": {
+    "logs": ["graph.projection", "abstraction.change", "structural.anomaly"],
+    "metrics": ["node.count", "edge.count", "authority.shortcut.count", "orphan.capability.count"],
+    "traces": ["artifact/state→graph→lambda-abstraction→anomaly→evidence"]
+  },
+  "security": {
+    "trust_boundaries": [
+      "visualization != source semantics",
+      "graph anomaly != authorization decision",
+      "abstraction must preserve declared structural invariants",
+      "authority topology evidence feeds but does not replace deterministic policy"
+    ]
+  },
+  "epistemic": {
+    "status": "ENGINEERING_CANDIDATE",
+    "confidence": 0.81
+  }
+}
