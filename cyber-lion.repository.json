@@ -9,9 +9,21 @@
   },
   "cyber_lion": {
     "tile_id": "structural-intelligence.mosaic",
-    "roles": ["StructuralIntelligenceEngine", "GraphProjectionProvider", "TopologyRiskAnalyzer"],
-    "layers": ["INF", "SEM"],
-    "disposition": ["KEEP", "REFINE", "GENERALIZE", "INTEGRATE"]
+    "roles": [
+      "StructuralIntelligenceEngine",
+      "GraphProjectionProvider",
+      "TopologyRiskAnalyzer"
+    ],
+    "layers": [
+      "INF",
+      "SEM"
+    ],
+    "disposition": [
+      "KEEP",
+      "REFINE",
+      "GENERALIZE",
+      "INTEGRATE"
+    ]
   },
   "capabilities": [
     "graph.project",
@@ -23,12 +35,25 @@
   ],
   "authority": {
     "maximum_level": "read",
-    "required_gates": ["cyber-lion.mand"]
+    "required_gates": [
+      "cyber-lion.mand"
+    ]
   },
   "observability": {
-    "logs": ["graph.projection", "abstraction.change", "structural.anomaly"],
-    "metrics": ["node.count", "edge.count", "authority.shortcut.count", "orphan.capability.count"],
-    "traces": ["artifact/state→graph→lambda-abstraction→anomaly→evidence"]
+    "logs": [
+      "graph.projection",
+      "abstraction.change",
+      "structural.anomaly"
+    ],
+    "metrics": [
+      "node.count",
+      "edge.count",
+      "authority.shortcut.count",
+      "orphan.capability.count"
+    ],
+    "traces": [
+      "artifact/state→graph→lambda-abstraction→anomaly→evidence"
+    ]
   },
   "security": {
     "trust_boundaries": [
@@ -41,5 +66,57 @@
   "epistemic": {
     "status": "ENGINEERING_CANDIDATE",
     "confidence": 0.81
+  },
+  "architecture_knowledge": {
+    "schema_version": "1.0.0",
+    "global_owner": "DonkeyJJLove/ai_platform",
+    "semantic_exports": [
+      "structure_graph",
+      "topology_analysis",
+      "authority_graph"
+    ],
+    "semantic_imports": [
+      "architecture",
+      "contracts",
+      "currentness"
+    ],
+    "repository_dependencies": [
+      "DonkeyJJLove/ai_platform"
+    ],
+    "architecture_artifacts": [
+      {
+        "path": "AGENTS.md",
+        "class": "HUMAN_ARCHITECTURE_DOCUMENT",
+        "currentness": "LOCAL_OWNER"
+      },
+      {
+        "path": "AI_NATIVE_ROADMAP.md",
+        "class": "ROADMAP",
+        "currentness": "LOCAL_OWNER"
+      },
+      {
+        "path": "PROCESS_GUARD.md",
+        "class": "PROCESS_GUARD",
+        "currentness": "LOCAL_OWNER"
+      },
+      {
+        "path": "README.MD",
+        "class": "HUMAN_ARCHITECTURE_DOCUMENT",
+        "currentness": "LOCAL_OWNER"
+      }
+    ],
+    "discoverability": {
+      "entrypoint": "AGENTS.md",
+      "global_owner_route": "AGENTS.md -> cyber-lion.repository.json -> DonkeyJJLove/ai_platform:LION/architecture/v1_5/README.md",
+      "max_reads_to_global_owner": 3
+    },
+    "invalidation_triggers": [
+      "SOURCE_CHANGE",
+      "CONTRACT_CHANGE",
+      "CAPABILITY_CHANGE",
+      "CURRENTNESS_CHANGE",
+      "REPOSITORY_ROLE_CHANGE",
+      "DEPENDENCY_CHANGE"
+    ]
   }
 }
