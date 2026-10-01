@@ -1,0 +1,19 @@
+{
+  "schema": "lion.repository-standardization/v1",
+  "repository": "DonkeyJJLove/mosaic_lab_pro.py",
+  "baseline": {
+    "head": "f11a707f673a0899e25d51d8b9e5bd635d856e81",
+    "tree": "fe2d9faa55fbc9e68872ed5b3f4774799317d8ed"
+  },
+  "global_standard_owner": "DonkeyJJLove/ai_platform:LION/standards/README.md",
+  "rename_map": [
+    {
+      "from": "README.MD",
+      "to": "README.md"
+    }
+  ],
+  "additional_repairs": [],
+  "unresolved": [],
+  "delete_effect": "NONE",
+  "authority_effect": "NONE"
+}
