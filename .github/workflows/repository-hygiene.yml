@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Require canonical README
-        run: test -f README.MD || test -f README.md
+        run: test -f README.md || test -f README.md
       - name: Reject tracked local/generated state
         run: |
           BAD=$(git ls-files | grep -E '(^|/)(\.venv|venv|\.idea|__pycache__)(/|$)|(^|/)\.env\.local$|\.egg-info(/|$)' || true)
