@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lion://graph-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_ref",
+    "source_digest",
+    "nodes",
+    "edges",
+    "input_class",
+    "upstream_digest",
+    "authority_effect",
+    "projection_digest"
+  ]
+}

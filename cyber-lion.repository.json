@@ -111,6 +111,16 @@
         "path": "REPOSITORY_STANDARDIZATION_R1.json",
         "class": "MACHINE_READABLE_ARCHITECTURE",
         "currentness": "LOCAL_OWNER"
+      },
+      {
+        "path": "contracts/graph_projection.schema.json",
+        "class": "SCHEMA",
+        "currentness": "LOCAL_OWNER"
+      },
+      {
+        "path": "mosaic_core.py",
+        "class": "CONTRACT",
+        "currentness": "LOCAL_OWNER"
       }
     ],
     "discoverability": {
