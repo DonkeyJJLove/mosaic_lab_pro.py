@@ -73,12 +73,15 @@
     "semantic_exports": [
       "structure_graph",
       "topology_analysis",
-      "authority_graph"
+      "authority_graph",
+      "relevance_graph_candidate",
+      "topology_metrics"
     ],
     "semantic_imports": [
       "architecture",
       "contracts",
-      "currentness"
+      "currentness",
+      "semantic_relevance"
     ],
     "repository_dependencies": [
       "DonkeyJJLove/ai_platform"
